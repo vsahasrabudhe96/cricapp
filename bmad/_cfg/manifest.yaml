@@ -1,0 +1,8 @@
+installation:
+  version: 6.0.0-alpha.12
+  installDate: '2025-12-01T04:19:28.790Z'
+  lastUpdated: '2025-12-01T04:19:28.790Z'
+modules:
+  - core
+  - bmm
+ides: []

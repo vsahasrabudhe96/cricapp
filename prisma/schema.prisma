@@ -1,0 +1,477 @@
+// ===========================================
+// CricApp Database Schema
+// ===========================================
+// A multi-tenant SaaS schema for live cricket tracking
+// Designed for PostgreSQL with Prisma ORM
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ===========================================
+// Authentication & User Management
+// ===========================================
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  emailVerified DateTime?
+  name          String?
+  image         String?
+  passwordHash  String?   // For email/password auth
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Auth relations (NextAuth)
+  accounts Account[]
+  sessions Session[]
+
+  // App relations
+  subscription      Subscription?
+  favoriteTeams     FavoriteTeam[]
+  notificationPrefs NotificationPreference[]
+  notifications     Notification[]
+
+  @@index([email])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ===========================================
+// Subscription & Billing (Stripe)
+// ===========================================
+
+enum SubscriptionStatus {
+  ACTIVE
+  TRIALING
+  PAST_DUE
+  CANCELED
+  UNPAID
+  INCOMPLETE
+}
+
+enum PlanType {
+  FREE
+  PRO
+}
+
+model Subscription {
+  id                   String             @id @default(cuid())
+  userId               String             @unique
+  stripeCustomerId     String?            @unique
+  stripeSubscriptionId String?            @unique
+  stripePriceId        String?
+  plan                 PlanType           @default(FREE)
+  status               SubscriptionStatus @default(ACTIVE)
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean            @default(false)
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([stripeCustomerId])
+  @@index([stripeSubscriptionId])
+}
+
+// ===========================================
+// Cricket Data: Competitions & Teams
+// ===========================================
+
+enum CompetitionType {
+  INTERNATIONAL  // Test, ODI, T20I
+  DOMESTIC       // Ranji Trophy, County Championship, etc.
+  FRANCHISE      // IPL, BBL, CPL, etc.
+}
+
+model Competition {
+  id           String          @id @default(cuid())
+  externalId   String          @unique // ID from cricket API
+  name         String
+  shortName    String?
+  type         CompetitionType
+  country      String?
+  season       String?         // e.g., "2024", "2024-25"
+  startDate    DateTime?
+  endDate      DateTime?
+  isActive     Boolean         @default(true)
+  logoUrl      String?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  matches Match[]
+  teams   TeamCompetition[]
+
+  @@index([type])
+  @@index([isActive])
+  @@index([externalId])
+}
+
+model Team {
+  id          String   @id @default(cuid())
+  externalId  String   @unique // ID from cricket API
+  name        String
+  shortName   String?
+  country     String?
+  logoUrl     String?
+  isNational  Boolean  @default(false) // National team vs club/franchise
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  competitions  TeamCompetition[]
+  homeMatches   Match[]           @relation("HomeTeam")
+  awayMatches   Match[]           @relation("AwayTeam")
+  players       PlayerTeam[]
+  favoritedBy   FavoriteTeam[]
+
+  @@index([externalId])
+  @@index([country])
+}
+
+model TeamCompetition {
+  id            String   @id @default(cuid())
+  teamId        String
+  competitionId String
+  joinedAt      DateTime @default(now())
+
+  team        Team        @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  competition Competition @relation(fields: [competitionId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, competitionId])
+}
+
+// ===========================================
+// Cricket Data: Players
+// ===========================================
+
+enum PlayerRole {
+  BATSMAN
+  BOWLER
+  ALL_ROUNDER
+  WICKET_KEEPER
+}
+
+enum BattingStyle {
+  RIGHT_HANDED
+  LEFT_HANDED
+}
+
+enum BowlingStyle {
+  RIGHT_ARM_FAST
+  RIGHT_ARM_MEDIUM
+  RIGHT_ARM_OFFBREAK
+  RIGHT_ARM_LEGBREAK
+  LEFT_ARM_FAST
+  LEFT_ARM_MEDIUM
+  LEFT_ARM_ORTHODOX
+  LEFT_ARM_CHINAMAN
+  NONE
+}
+
+model Player {
+  id           String        @id @default(cuid())
+  externalId   String        @unique // ID from cricket API
+  name         String
+  fullName     String?
+  country      String?
+  dateOfBirth  DateTime?
+  role         PlayerRole?
+  battingStyle BattingStyle?
+  bowlingStyle BowlingStyle?
+  imageUrl     String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  teams PlayerTeam[]
+  stats PlayerStats[]
+
+  @@index([externalId])
+  @@index([country])
+  @@index([name])
+}
+
+model PlayerTeam {
+  id        String   @id @default(cuid())
+  playerId  String
+  teamId    String
+  isActive  Boolean  @default(true)
+  joinedAt  DateTime @default(now())
+  leftAt    DateTime?
+
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  team   Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([playerId, teamId])
+}
+
+// ===========================================
+// Cricket Data: Player Statistics
+// ===========================================
+
+enum MatchFormat {
+  TEST
+  ODI
+  T20I
+  T20      // Franchise T20s
+  LIST_A   // List A (domestic 50-over)
+  FIRST_CLASS
+}
+
+model PlayerStats {
+  id        String      @id @default(cuid())
+  playerId  String
+  format    MatchFormat
+  updatedAt DateTime    @updatedAt
+
+  // Batting stats
+  battingMatches   Int @default(0)
+  battingInnings   Int @default(0)
+  battingRuns      Int @default(0)
+  battingHighScore String? // e.g., "264*"
+  battingAverage   Float?
+  battingStrikeRate Float?
+  battingCenturies Int @default(0)
+  battingFifties   Int @default(0)
+  battingFours     Int @default(0)
+  battingSixes     Int @default(0)
+  battingNotOuts   Int @default(0)
+
+  // Bowling stats
+  bowlingMatches   Int @default(0)
+  bowlingInnings   Int @default(0)
+  bowlingWickets   Int @default(0)
+  bowlingRuns      Int @default(0)
+  bowlingBestInnings String? // e.g., "8/43"
+  bowlingBestMatch   String? // e.g., "13/106"
+  bowlingAverage   Float?
+  bowlingEconomy   Float?
+  bowlingStrikeRate Float?
+  bowlingFiveWickets Int @default(0)
+  bowlingTenWickets  Int @default(0)
+
+  // Fielding stats
+  catches  Int @default(0)
+  stumpings Int @default(0)
+
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  @@unique([playerId, format])
+  @@index([format])
+}
+
+// ===========================================
+// Cricket Data: Matches
+// ===========================================
+
+enum MatchStatus {
+  SCHEDULED
+  TOSS_DONE
+  LIVE
+  INNINGS_BREAK
+  STUMPS        // End of day's play (Tests)
+  DELAYED       // Rain, bad light, etc.
+  ABANDONED
+  COMPLETED
+  NO_RESULT
+}
+
+model Match {
+  id            String      @id @default(cuid())
+  externalId    String      @unique // ID from cricket API
+  competitionId String
+  homeTeamId    String
+  awayTeamId    String
+  format        MatchFormat
+  status        MatchStatus @default(SCHEDULED)
+
+  // Match info
+  matchNumber   Int?        // Match number in series/tournament
+  venue         String?
+  city          String?
+  startTime     DateTime
+  endTime       DateTime?
+
+  // Toss info
+  tossWinnerId  String?     // Team ID that won toss
+  tossDecision  String?     // "bat" or "field"
+
+  // Result info
+  winnerId      String?     // Team ID that won match
+  result        String?     // e.g., "India won by 5 wickets"
+  manOfMatch    String?     // Player name
+
+  // Live score cache (denormalized for quick access)
+  currentInnings Int?
+  currentScore   String?    // e.g., "245/4"
+  currentOvers   String?    // e.g., "34.2"
+  currentRR      Float?     // Current run rate
+  requiredRR     Float?     // Required run rate (chases)
+  target         Int?       // Target score (chases)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  lastPolledAt DateTime?
+
+  // Relations
+  competition Competition @relation(fields: [competitionId], references: [id])
+  homeTeam    Team        @relation("HomeTeam", fields: [homeTeamId], references: [id])
+  awayTeam    Team        @relation("AwayTeam", fields: [awayTeamId], references: [id])
+  innings     Innings[]
+
+  @@index([status])
+  @@index([startTime])
+  @@index([competitionId])
+  @@index([homeTeamId])
+  @@index([awayTeamId])
+  @@index([externalId])
+}
+
+// Detailed innings data (optional, for deeper stats)
+model Innings {
+  id           String @id @default(cuid())
+  matchId      String
+  inningsNumber Int   // 1, 2, 3, or 4
+  battingTeamId String
+  runs         Int    @default(0)
+  wickets      Int    @default(0)
+  overs        String? // e.g., "50.0"
+  extras       Int    @default(0)
+  declared     Boolean @default(false)
+  followOn     Boolean @default(false)
+
+  match Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+
+  @@unique([matchId, inningsNumber])
+}
+
+// ===========================================
+// User Preferences & Favorites
+// ===========================================
+
+model FavoriteTeam {
+  id        String   @id @default(cuid())
+  userId    String
+  teamId    String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, teamId])
+  @@index([userId])
+  @@index([teamId])
+}
+
+// ===========================================
+// Notifications
+// ===========================================
+
+enum NotificationType {
+  MATCH_START
+  TOSS_RESULT
+  PLAYING_XI
+  MATCH_RESULT
+  INNINGS_BREAK
+  MILESTONE       // Century, 5-wicket haul, etc.
+}
+
+enum NotificationChannel {
+  EMAIL
+  IN_APP
+  PUSH            // For future mobile/browser push
+}
+
+model NotificationPreference {
+  id        String              @id @default(cuid())
+  userId    String
+  teamId    String?             // null = global preference
+  type      NotificationType
+  channel   NotificationChannel
+  enabled   Boolean             @default(true)
+  createdAt DateTime            @default(now())
+  updatedAt DateTime            @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, teamId, type, channel])
+  @@index([userId])
+}
+
+model Notification {
+  id        String              @id @default(cuid())
+  userId    String
+  type      NotificationType
+  channel   NotificationChannel
+  title     String
+  body      String
+  data      Json?               // Additional data (match ID, etc.)
+  read      Boolean             @default(false)
+  sentAt    DateTime?
+  createdAt DateTime            @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read])
+  @@index([userId, createdAt])
+}
+
+// ===========================================
+// System: API Provider Tracking
+// ===========================================
+
+model ApiSyncLog {
+  id         String   @id @default(cuid())
+  provider   String   // e.g., "cricketdata", "cricapi"
+  endpoint   String   // e.g., "matches", "players"
+  status     String   // "success", "error"
+  recordsCount Int?
+  errorMessage String?
+  duration   Int?     // ms
+  createdAt  DateTime @default(now())
+
+  @@index([provider, createdAt])
+}
+
